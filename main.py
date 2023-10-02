@@ -4,6 +4,11 @@ from googletrans import Translator
 import requests
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
+from gtts import gTTS
+from firebase_config import upload_audio_and_get_url
+import re
+import uuid
+import time
 
 
 class InputData(BaseModel):
@@ -22,6 +27,27 @@ app.add_middleware(
 translator = Translator()
 
 
+# Function to convert text to speech and get the URL
+def speak_and_get_url(text):
+    language = "hi"
+    tts = gTTS(text, lang=language, slow=False)
+    file_name = f"audio/{int(time.time())}_{str(uuid.uuid4())}.mp3"
+    tts.save(file_name)
+    url = upload_audio_and_get_url(file_name)
+    return url
+
+
+# Replace function
+def replace_symbols_with_space(text):
+    # Define a regular expression pattern to match symbols and newlines
+    pattern = r"[^\w\s]+|\n"
+
+    # Use re.sub() to replace matching symbols and newlines with whitespace
+    cleaned_text = re.sub(pattern, " ", text)
+
+    return cleaned_text
+
+
 # Endpoint for home
 @app.get("/")
 async def welcome():
@@ -36,37 +62,36 @@ async def translate_welcome():
 
 # FastAPI endpoint to scrape and translate a webpage
 @app.post("/translate")
-async def translate_url(input_data: InputData):  # Accept the URL from the request body
-    lis = []
-
+async def translate_url(input_data: InputData):
+    url = input_data.url
     headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.12; rv:55.0) Gecko/20100101 Firefox/55.0",
     }
 
-    url = input_data.url
+    try:
+        res = requests.get(url, headers=headers, timeout=100)
+        res.raise_for_status()
 
-    res = requests.get(url, headers=headers, timeout=100)
+        soup = BeautifulSoup(res.text, "html.parser")
+        # Remove all script tags from the soup
+        for script in soup.find_all("script"):
+            script.extract()
+        text = soup.get_text()
+        lis = [x.strip() for x in text.split("\n") if x.strip() != ""]
+        translations = {}
 
-    content = res.content
-
-    soup = BeautifulSoup(content, "html.parser")
-    # Remove all script tags from the soup
-    for script in soup.find_all("script"):
-        script.extract()
-    text = soup.get_text()
-    lis = [x for x in text.split("\n") if x != ""]
-
-    dict = {}
-
-    for i in lis:
-        i = i.strip()
-        if i != "":
-            print(i)
+        for i in lis:
             translated_text = translator.translate(i, src="en", dest="hi")
-            dict.update({i: translated_text.text})
-
-    print(dict)
-    return dict
+            translations[i] = translated_text.text
+        print(translations)
+        values_list = list(translations.values())
+        # print(values_list)
+        text = replace_symbols_with_space(" ".join(values_list))
+        # print(text)
+        audio_url = speak_and_get_url(text)
+        return {"text": translations, "audio_url": audio_url}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
 
 
 if __name__ == "__main__":

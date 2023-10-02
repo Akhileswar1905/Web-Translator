@@ -1,47 +1,95 @@
-from urllib.request import urlopen
+from fastapi import FastAPI, HTTPException
 from bs4 import BeautifulSoup
-import requests
-import urllib.parse
-import datetime
 from googletrans import Translator
+import requests
+from pydantic import BaseModel
+from fastapi.middleware.cors import CORSMiddleware
+from gtts import gTTS
+from firebase_config import upload_audio_and_get_url
+import re
 
+
+class InputData(BaseModel):
+    url: str
+
+
+app = FastAPI()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Initialize a Translator object
 translator = Translator()
 
-filename = f"file.html"
-filename2 = f"file.py"
-file = open(filename, "w", encoding="utf-8")
-file2 = open(filename2, "w", encoding="utf-8")
 
-lis = []
+# Function to convert text to speech and get the URL
+def speak_and_get_url(text):
+    tts = gTTS(text, lang="hi")
+    file_name = "audio/output.mp3"
+    tts.save(file_name)
+    url = upload_audio_and_get_url(file_name)
+    return url
 
-headers = {
-    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.12; rv:55.0) Gecko/20100101 Firefox/55.0",
-}
 
-url = "https://github.com/"
+# Replace function
+def replace_symbols_with_space(text):
+    # Define a regular expression pattern to match symbols and newlines
+    pattern = r"[^\w\s]+|\n"
 
-res = requests.get(url, headers=headers, timeout=100)
+    # Use re.sub() to replace matching symbols and newlines with whitespace
+    cleaned_text = re.sub(pattern, " ", text)
 
-content = res.content
+    return cleaned_text
 
-soup = BeautifulSoup(content, "html.parser")
-# Remove all script tags from the soup
-for script in soup.find_all("script"):
-    script.extract()
-text = soup.get_text()
-lis = [x for x in text.split("\n") if x != ""]
 
-# print(soup)
-file.write(str(soup))
+# Endpoint for home
+@app.get("/")
+async def welcome():
+    return "Welcome to Web Translator"
 
-dict = {}
 
-for i in lis:
-    i = i.strip()
-    if i != "":
-        # print(i)
-        translated_text = translator.translate(i, src="en", dest="hi")
-        dict.update({i: translated_text.text})
+# Get Endpoint for /translate
+@app.get("/translate")
+async def translate_welcome():
+    return "Welcome to /translate endpoint"
 
-file2.write(str(dict))
-# print(dict)
+
+# FastAPI endpoint to scrape and translate a webpage
+@app.post("/translate")
+async def translate_url(input_data: InputData):
+    url = input_data.url
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.12; rv:55.0) Gecko/20100101 Firefox/55.0",
+    }
+
+    try:
+        res = requests.get(url, headers=headers, timeout=100)
+        res.raise_for_status()
+
+        soup = BeautifulSoup(res.text, "html.parser")
+        # Remove all script tags from the soup
+        for script in soup.find_all("script"):
+            script.extract()
+        text = soup.get_text()
+        lis = [x.strip() for x in text.split("\n") if x.strip() != ""]
+        translations = {}
+
+        for i in lis:
+            print(i)
+            translated_text = translator.translate(i, src="en", dest="hi")
+            translations[i] = translated_text.text
+        text = replace_symbols_with_space(text)
+        print(text)
+        audio_url = speak_and_get_url(text)
+        return {"text": translations, "audio_url": audio_url}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(app, host="127.0.0.1", port=8000)
